@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>墨流し — Suminagashi · Ink in Dissolution</title>
+<meta name="description" content="Suminagashi — Japanese ink marbling rendered as a live GPGPU stable-fluids simulation flowing over a still Chinese dragon. Drag to set the ink moving." />
+<meta name="theme-color" content="#f4f0e6" />
+
+<!-- Open Graph -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="墨流し — Suminagashi · Ink in Dissolution" />
+<meta property="og:description" content="A live ink-marbling fluid simulation over a still Chinese dragon. Three.js · Stable Fluids." />
+<!-- TODO after deploy: set og:url, and make og:image an ABSOLUTE url (https://your-domain/og.jpg) — relative paths fail in most social scrapers. -->
+<meta property="og:url" content="" />
+<meta property="og:image" content="og.jpg" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="og.jpg" />
+
+<!-- Type -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@500;600;700&display=swap" rel="stylesheet" />
+
+<style>
+  :root{
+    --paper:#f4f0e6;
+    --ink:#1a1a1a;
+    --frost:rgba(255,255,255,0.52);
+    --frost-edge:rgba(255,255,255,0.66);
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; }
+  html{ background:var(--paper); }
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    overflow:hidden;
+    overscroll-behavior:none;
+    -webkit-tap-highlight-color:transparent;
+    font-family:"Noto Serif JP", ui-serif, Georgia, "Times New Roman", serif;
+  }
+
+  /* Simulation canvas — fills the viewport, sits behind the type. */
+  #sim{
+    position:fixed;
+    inset:0;
+    width:100%;
+    height:100%;
+    display:block;
+    touch-action:none;
+    cursor:crosshair;
+    z-index:0;
+  }
+
+  /* Typographic overlay — non-interactive except the pill. */
+  .veil{
+    position:fixed;
+    inset:0;
+    z-index:2;
+    pointer-events:none;
+    -webkit-user-select:none;
+    user-select:none;
+  }
+
+  /* Top-left vertical title block. */
+  .masthead{
+    position:absolute;
+    top:clamp(18px, 4vh, 46px);
+    left:clamp(16px, 3.4vw, 52px);
+    display:flex;
+    flex-direction:row-reverse;   /* title column sits right of the caption column */
+    align-items:flex-start;
+    gap:clamp(8px, 1vw, 16px);
+    writing-mode:vertical-rl;
+  }
+  .masthead .wordmark{
+    font-weight:600;
+    font-size:clamp(2.6rem, 6.4vw, 4.7rem);
+    line-height:1;
+    letter-spacing:0.12em;
+    color:var(--ink);
+    text-shadow:0 1px 0 rgba(255,255,255,0.35);
+  }
+  .masthead .sub{
+    writing-mode:vertical-rl;
+    text-orientation:sideways;
+    font-family:"Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:0.42em;
+    text-transform:uppercase;
+    color:var(--ink);
+    opacity:0.62;
+    margin-top:6px;
+  }
+
+  /* Bottom-right credit. */
+  .credit{
+    position:absolute;
+    right:clamp(16px, 3vw, 40px);
+    bottom:clamp(14px, 3vh, 30px);
+    font-family:"Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:0.34em;
+    text-transform:uppercase;
+    color:var(--ink);
+    opacity:0.5;
+  }
+
+  /* Frosted palette pill — bottom centre. */
+  .pill{
+    position:absolute;
+    left:50%;
+    bottom:max(20px, calc(env(safe-area-inset-bottom) + 12px));
+    transform:translateX(-50%);
+    pointer-events:auto;
+    touch-action:manipulation;   /* no tap-delay / double-tap zoom on the controls */
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:9px 14px;
+    border-radius:999px;
+    background:var(--frost);
+    border:1px solid var(--frost-edge);
+    box-shadow:0 8px 30px rgba(40,32,20,0.16), inset 0 1px 0 rgba(255,255,255,0.6);
+    -webkit-backdrop-filter:blur(14px) saturate(1.25);
+    backdrop-filter:blur(14px) saturate(1.25);
+  }
+  .swatches{ display:flex; align-items:center; gap:9px; }
+  .swatch{
+    width:24px; height:24px;
+    margin:0; padding:0;
+    border-radius:50%;
+    border:1.5px solid rgba(26,26,26,0.18);
+    cursor:pointer;
+    transition:transform .16s ease, box-shadow .16s ease;
+    position:relative;
+  }
+  .swatch:hover{ transform:translateY(-1px) scale(1.06); }
+  .swatch[aria-pressed="true"]{
+    box-shadow:0 0 0 2px var(--paper), 0 0 0 3.5px rgba(26,26,26,0.85);
+  }
+  .swatch.multi{
+    background:conic-gradient(from 220deg, #1a1a1a, #2b4c7e, #3e6b4f, #b33a3a, #1a1a1a);
+    border-color:rgba(26,26,26,0.22);
+  }
+  .divider{ width:1px; height:22px; background:rgba(26,26,26,0.16); }
+
+  .ctl{
+    font-family:"Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+    font-size:12px; font-weight:600;
+    letter-spacing:0.06em;
+    color:var(--ink);
+    background:transparent;
+    border:1px solid transparent;
+    border-radius:999px;
+    padding:5px 11px;
+    cursor:pointer;
+    line-height:1;
+    white-space:nowrap;
+    transition:background .16s ease, border-color .16s ease, opacity .16s ease;
+  }
+  .ctl:hover{ background:rgba(255,255,255,0.5); }
+  .ctl.toggle[aria-pressed="true"]{
+    background:rgba(26,26,26,0.9);
+    color:var(--paper);
+    border-color:rgba(26,26,26,0.9);
+  }
+  .ctl .lat{ font-size:9px; letter-spacing:0.18em; opacity:0.6; margin-left:6px; text-transform:uppercase; }
+
+  :focus-visible{ outline:2px solid #2b4c7e; outline-offset:3px; }
+
+  /* Fatal-error notice (kept invisible unless triggered). */
+  #fatal{
+    position:fixed; inset:0; z-index:9;
+    display:none; place-items:center;
+    padding:24px; text-align:center;
+    font-family:"Helvetica Neue", Arial, sans-serif;
+    color:var(--ink); background:var(--paper);
+  }
+  #fatal p{ max-width:32ch; font-size:14px; line-height:1.6; opacity:0.8; }
+
+  @media (max-width:560px){
+    .masthead .wordmark{ font-size:clamp(2.2rem, 12vw, 3.2rem); }
+    .pill{ gap:10px; padding:8px 11px; }
+    .swatches{ gap:7px; }
+    .swatch{ width:22px; height:22px; }
+    .ctl{ font-size:11px; padding:5px 9px; }
+    .ctl .lat{ display:none; }
+  }
+
+  /* Below ~960px the centred pill spans most of the bottom edge — lift the
+     credit clear of it, into the top-right, so controls are never covered. */
+  @media (max-width:960px){
+    .credit{ top:clamp(16px,3.2vh,28px); right:clamp(16px,3.4vw,40px); bottom:auto; }
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    .swatch, .ctl{ transition:none; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="sim" aria-label="Interactive suminagashi ink-marbling canvas. Drag to set the ink flowing."></canvas>
+
+  <div class="veil">
+    <div class="masthead">
+      <h1 class="wordmark" lang="ja">墨流し</h1>
+      <p class="sub" lang="en">Suminagashi — Ink in Dissolution</p>
+    </div>
+    <p class="credit" lang="en">Three.js · Stable Fluids</p>
+
+    <div class="pill" role="group" aria-label="Ink palette and controls">
+      <div class="swatches" role="radiogroup" aria-label="Ink colour">
+        <button class="swatch" role="radio" data-ink="0" title="Sumi black"      aria-label="Sumi black"       style="background:#1a1a1a"></button>
+        <button class="swatch" role="radio" data-ink="1" title="Indigo"          aria-label="Indigo"            style="background:#2b4c7e"></button>
+        <button class="swatch" role="radio" data-ink="2" title="Vermillion"      aria-label="Vermillion"        style="background:#b33a3a"></button>
+        <button class="swatch" role="radio" data-ink="3" title="Pine green"      aria-label="Pine green"        style="background:#3e6b4f"></button>
+        <button class="swatch multi" role="radio" data-ink="-1" title="Multicolour" aria-label="Multicolour, random ink per stroke"></button>
+      </div>
+      <span class="divider" aria-hidden="true"></span>
+      <button class="ctl toggle" id="autoBtn" aria-pressed="true" title="Auto performance">自動演出<span class="lat">Auto</span></button>
+      <button class="ctl" id="washBtn" title="Wash the ink away">洗い流す<span class="lat">Wash</span></button>
+    </div>
+  </div>
+
+  <div id="fatal" role="alert"><p>This piece needs WebGL, which your browser has turned off or can’t run. Try a recent Chrome, Safari, Firefox or Edge.</p></div>
+
+  <noscript>
+    <div style="position:fixed;inset:0;display:grid;place-items:center;font-family:sans-serif;color:#1a1a1a;padding:24px;text-align:center;">
+      墨流し — this living ink piece needs JavaScript enabled.
+    </div>
+  </noscript>
+
+  <script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+
+  <script type="module">
+  import * as THREE from 'three';
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     SUMINAGASHI — GPGPU Stable Fluids (Jos Stam) over a static pagoda.
+     advect → splat → vorticity confinement → divergence →
+     pressure (Jacobi ×25) → gradient subtract.   Ping-pong half-float targets.
+     Dye composites as a Beer–Lambert wash (base · exp(-density)) so inks read
+     as translucent pigment over both paper and the black pagoda, and overlap
+     subtractively — never additive / neon.
+     ──────────────────────────────────────────────────────────────────────── */
+
+  // ── Config (per brief) ────────────────────────────────────────────────────
+  const CFG = {
+    SIM_RES: 512,
+    DYE_RES: 1024,
+    VEL_DISS: 0.982,     // swirls persist enough to interleave, then settle
+    DYE_DISS: 0.997,     // pigment lingers longer (~2x) so more colours coexist and marble
+    CURL: 36,            // vorticity — fine filaments through the marbling
+    SPLAT_RADIUS: 0.0035,
+    PRESSURE: 0.8,
+    PRESSURE_ITER: 25,
+    SPLAT_FORCE: 6000,
+    INK_STRENGTH: 1.3,   // richer washes (not pale)
+    DYE_AMOUNT: 0.5,     // pointer dab pigment
+    AUTO_AMOUNT: 0.3,    // auto dab pigment
+    AUTO_INTERVAL: 1.7,  // seconds
+    DPR_CAP: 2,
+  };
+
+  // ── Mobile / low-power budget ───────────────────────────────────────────────
+  // Phones & tablets (coarse pointer, or a phone-width viewport) boot on a lighter
+  // grid + lower pixel ratio so the fluid sim holds ~60fps from the very first
+  // frame. The runtime auto-downgrade further down stays as a safety net.
+  const isMobile = matchMedia('(pointer: coarse)').matches || window.innerWidth <= 640;
+  if (isMobile){
+    CFG.DPR_CAP = 1.5;
+    CFG.SIM_RES = 384;
+    CFG.DYE_RES = 768;
+  }
+
+  // Traditional pigments. rgb = the wash colour each ink leaves on white paper.
+  const PALETTE = [
+    { name:'sumi',       rgb:[0.102,0.102,0.102] },
+    { name:'indigo',     rgb:[0.169,0.298,0.494] },
+    { name:'vermillion', rgb:[0.702,0.227,0.227] },
+    { name:'pine',       rgb:[0.243,0.420,0.310] },
+  ];
+  // Beer–Lambert absorption per ink: a unit of density yields roughly that wash.
+  const ABSORB = PALETTE.map(p => p.rgb.map(c => -Math.log(Math.min(Math.max(c,0.04),0.985))));
+
+  const PAPER_RGB  = [0.957,0.941,0.902]; // #f4f0e6
+  const PAGODA_RGB = [0.067,0.067,0.067]; // #111
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let activeInk = 1;           // index into PALETTE, or -1 for multicolour
+  let autoOn    = !reduceMotion;
+  let washUntil = 0;
+  const WASH_MS = 2400;   // dissolution / rinse length (ms)
+  let autoTimer = 0;
+  let simRes    = CFG.SIM_RES;
+  let downgraded = false;
+
+  // ── WebGL context: prefer WebGL2, fall back to WebGL1 + half-float ─────────
+  const canvas = document.getElementById('sim');
+  const ctxAttribs = { alpha:false, antialias:false, depth:false, stencil:false, premultipliedAlpha:false, preserveDrawingBuffer:false, powerPreference:'high-performance' };
+  let gl = canvas.getContext('webgl2', ctxAttribs);
+  let isWebGL2 = !!gl;
+  if (!gl) gl = canvas.getContext('webgl', ctxAttribs) || canvas.getContext('experimental-webgl', ctxAttribs);
+  if (!gl) { document.getElementById('fatal').style.display='grid'; throw new Error('[suminagashi] WebGL unavailable'); }
+
+  let supportLinear = true;
+  if (isWebGL2) {
+    console.info('[suminagashi] WebGL2 context — half-float targets, linear filtering.');
+  } else {
+    console.warn('[suminagashi] WebGL2 unavailable — falling back to WebGL1 + OES_texture_half_float.');
+    const hf  = gl.getExtension('OES_texture_half_float');
+    const hfl = gl.getExtension('OES_texture_half_float_linear');
+    const cbf = gl.getExtension('EXT_color_buffer_half_float') || gl.getExtension('WEBGL_color_buffer_float');
+    supportLinear = !!hfl;
+    if (!hf)  console.error('[suminagashi] OES_texture_half_float missing — simulation may not run.');
+    if (!cbf) console.error('[suminagashi] EXT_color_buffer_half_float missing — cannot render to half-float targets.');
+    if (!hfl) console.warn('[suminagashi] OES_texture_half_float_linear missing — using manual bilinear sampling in advection.');
+  }
+
+  const renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias:false, alpha:false });
+  renderer.autoClear = false;
+  renderer.setClearColor(0x000000, 0);
+  const FILTER = supportLinear ? THREE.LinearFilter : THREE.NearestFilter;
+
+  // ── Fullscreen-triangle plumbing ──────────────────────────────────────────
+  const scene  = new THREE.Scene();
+  const camera = new THREE.Camera();
+  const triGeo = new THREE.BufferGeometry();
+  triGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
+  triGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0,0,0), 4);
+  const quad = new THREE.Mesh(triGeo);
+  quad.frustumCulled = false;
+  scene.add(quad);
+
+  function blit(target, material){
+    quad.material = material;
+    renderer.setRenderTarget(target);
+    renderer.render(scene, camera);
+  }
+
+  const VERT = `
+    precision highp float;
+    attribute vec3 position;
+    varying vec2 vUv;
+    void main(){ vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+
+  function mat(fragment, uniforms, defines){
+    return new THREE.RawShaderMaterial({
+      vertexShader: VERT, fragmentShader: fragment,
+      uniforms, defines: defines || {},
+      depthTest:false, depthWrite:false,
+    });
+  }
+
+  // ── Shaders ────────────────────────────────────────────────────────────────
+  const FRAG_ADVECT = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uVelocity, uSource;
+    uniform vec2 texelSize, dyeTexelSize;
+    uniform float dt, dissipation;
+    #ifdef MANUAL_FILTERING
+      vec4 bilerp(sampler2D s, vec2 uv, vec2 ts){
+        vec2 st = uv / ts - 0.5;
+        vec2 i = floor(st); vec2 f = fract(st);
+        vec4 a = texture2D(s,(i+vec2(0.5,0.5))*ts);
+        vec4 b = texture2D(s,(i+vec2(1.5,0.5))*ts);
+        vec4 c = texture2D(s,(i+vec2(0.5,1.5))*ts);
+        vec4 d = texture2D(s,(i+vec2(1.5,1.5))*ts);
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+      }
+    #endif
+    void main(){
+      #ifdef MANUAL_FILTERING
+        vec2 vel = bilerp(uVelocity, vUv, texelSize).xy;
+        vec2 coord = vUv - dt * vel * texelSize;
+        vec4 result = bilerp(uSource, coord, dyeTexelSize);
+      #else
+        vec2 vel = texture2D(uVelocity, vUv).xy;
+        vec2 coord = vUv - dt * vel * texelSize;
+        vec4 result = texture2D(uSource, coord);
+      #endif
+      float decay = pow(dissipation, dt * 60.0);
+      gl_FragColor = decay * result;
+    }`;
+
+  const FRAG_SPLAT = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uTarget;
+    uniform float aspectRatio, radius;
+    uniform vec3 color;
+    uniform vec2 point;
+    void main(){
+      vec2 p = vUv - point; p.x *= aspectRatio;
+      vec3 splat = exp(-dot(p,p)/radius) * color;
+      gl_FragColor = vec4(texture2D(uTarget, vUv).xyz + splat, 1.0);
+    }`;
+
+  const FRAG_CURL = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uVelocity;
+    uniform vec2 texelSize;
+    void main(){
+      float L = texture2D(uVelocity, vUv - vec2(texelSize.x,0.0)).y;
+      float R = texture2D(uVelocity, vUv + vec2(texelSize.x,0.0)).y;
+      float T = texture2D(uVelocity, vUv + vec2(0.0,texelSize.y)).x;
+      float B = texture2D(uVelocity, vUv - vec2(0.0,texelSize.y)).x;
+      gl_FragColor = vec4(0.5*(R - L - T + B), 0.0, 0.0, 1.0);
+    }`;
+
+  const FRAG_VORTICITY = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uVelocity, uCurl;
+    uniform vec2 texelSize;
+    uniform float curl, dt;
+    void main(){
+      float L = texture2D(uCurl, vUv - vec2(texelSize.x,0.0)).x;
+      float R = texture2D(uCurl, vUv + vec2(texelSize.x,0.0)).x;
+      float T = texture2D(uCurl, vUv + vec2(0.0,texelSize.y)).x;
+      float B = texture2D(uCurl, vUv - vec2(0.0,texelSize.y)).x;
+      float C = texture2D(uCurl, vUv).x;
+      vec2 force = 0.5 * vec2(abs(T) - abs(B), abs(R) - abs(L));
+      force /= length(force) + 0.0001;
+      force *= curl * C;
+      force.y *= -1.0;
+      vec2 vel = texture2D(uVelocity, vUv).xy + force * dt;
+      gl_FragColor = vec4(clamp(vel, -1000.0, 1000.0), 0.0, 1.0);
+    }`;
+
+  const FRAG_DIVERGENCE = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uVelocity;
+    uniform vec2 texelSize;
+    void main(){
+      vec2 uvL = vUv - vec2(texelSize.x,0.0);
+      vec2 uvR = vUv + vec2(texelSize.x,0.0);
+      vec2 uvT = vUv + vec2(0.0,texelSize.y);
+      vec2 uvB = vUv - vec2(0.0,texelSize.y);
+      float L = texture2D(uVelocity, uvL).x;
+      float R = texture2D(uVelocity, uvR).x;
+      float T = texture2D(uVelocity, uvT).y;
+      float B = texture2D(uVelocity, uvB).y;
+      vec2 C = texture2D(uVelocity, vUv).xy;
+      if (uvL.x < 0.0) L = -C.x;
+      if (uvR.x > 1.0) R = -C.x;
+      if (uvT.y > 1.0) T = -C.y;
+      if (uvB.y < 0.0) B = -C.y;
+      gl_FragColor = vec4(0.5*(R - L + T - B), 0.0, 0.0, 1.0);
+    }`;
+
+  const FRAG_PRESSURE = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uPressure, uDivergence;
+    uniform vec2 texelSize;
+    void main(){
+      float L = texture2D(uPressure, vUv - vec2(texelSize.x,0.0)).x;
+      float R = texture2D(uPressure, vUv + vec2(texelSize.x,0.0)).x;
+      float T = texture2D(uPressure, vUv + vec2(0.0,texelSize.y)).x;
+      float B = texture2D(uPressure, vUv - vec2(0.0,texelSize.y)).x;
+      float div = texture2D(uDivergence, vUv).x;
+      gl_FragColor = vec4((L + R + B + T - div) * 0.25, 0.0, 0.0, 1.0);
+    }`;
+
+  const FRAG_GRADSUB = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uPressure, uVelocity;
+    uniform vec2 texelSize;
+    void main(){
+      float L = texture2D(uPressure, vUv - vec2(texelSize.x,0.0)).x;
+      float R = texture2D(uPressure, vUv + vec2(texelSize.x,0.0)).x;
+      float T = texture2D(uPressure, vUv + vec2(0.0,texelSize.y)).x;
+      float B = texture2D(uPressure, vUv - vec2(0.0,texelSize.y)).x;
+      vec2 vel = texture2D(uVelocity, vUv).xy - vec2(R - L, T - B);
+      gl_FragColor = vec4(vel, 0.0, 1.0);
+    }`;
+
+  const FRAG_MULTIPLY = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uTexture;
+    uniform float value;
+    void main(){ gl_FragColor = value * texture2D(uTexture, vUv); }`;
+
+  // Bakes paper (in-shader washi fbre noise) + pagoda silhouette into one layer.
+  const FRAG_BAKE = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uPagoda;
+    uniform vec2 resolution;
+    uniform vec3 paperColor, pagodaColor;
+    float hash(vec2 p){ p = fract(p*vec2(123.34,345.45)); p += dot(p, p+34.345); return fract(p.x*p.y); }
+    float noise(vec2 p){
+      vec2 i=floor(p), f=fract(p);
+      float a=hash(i), b=hash(i+vec2(1.0,0.0)), c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));
+      vec2 u=f*f*(3.0-2.0*f);
+      return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+    }
+    float fbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p*=2.02; a*=0.5; } return v; }
+    void main(){
+      vec2 uv = vUv;
+      float cloud = fbm(uv*3.0);
+      float grain = fbm(uv*vec2(resolution.x,resolution.y)*0.22);
+      float fibre = noise(vec2(uv.y*resolution.y*0.55, uv.x*resolution.x*0.045)); // long horizontal fibres
+      float n = (cloud*0.5 + grain*0.3 + fibre*0.2) - 0.5;
+      vec3 paper = paperColor + n*0.045;
+      paper *= 1.0 - 0.05*pow(clamp(length(uv-0.5)*1.25,0.0,1.0), 3.0); // whisper vignette
+      vec4 dg = texture2D(uPagoda, uv);            // dragon illustration (tonal, transparent bg)
+      float lum = dot(dg.rgb, vec3(0.299,0.587,0.114));
+      float cov = clamp(pow(1.0 - lum, 1.0) * dg.a * 2.5, 0.0, 1.0);  // tonal detail → ink on paper
+      gl_FragColor = vec4(mix(paper, pagodaColor, cov), 1.0);
+    }`;
+
+  // Final composite: ink wash multiplied over the baked background.
+  const FRAG_DISPLAY = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uBackground, uDye;
+    uniform float inkStrength;
+    uniform vec2 dyeTexel;
+    void main(){
+      vec3 base = texture2D(uBackground, vUv).rgb;
+      vec3 density = texture2D(uDye, vUv).rgb;
+      // Marbled veining: deepen the ink where pigment density changes sharply —
+      // the fine threads and edges that read as suminagashi marbling.
+      float c  = dot(density, vec3(0.3333));
+      float lx = dot(texture2D(uDye, vUv - vec2(dyeTexel.x,0.0)).rgb, vec3(0.3333));
+      float rx = dot(texture2D(uDye, vUv + vec2(dyeTexel.x,0.0)).rgb, vec3(0.3333));
+      float ty = dot(texture2D(uDye, vUv + vec2(0.0,dyeTexel.y)).rgb, vec3(0.3333));
+      float by = dot(texture2D(uDye, vUv - vec2(0.0,dyeTexel.y)).rgb, vec3(0.3333));
+      float grad = length(vec2(rx - lx, ty - by));
+      float vein = clamp(grad * 9.0, 0.0, 1.0) * smoothstep(0.02, 0.20, c);
+      vec3 d = density * (1.0 + vein * 0.9);
+      gl_FragColor = vec4(base * exp(-d * inkStrength), 1.0);
+    }`;
+
+  // ── Materials ──────────────────────────────────────────────────────────────
+  const V2 = (x,y)=>new THREE.Vector2(x,y);
+  const advectMat = mat(FRAG_ADVECT, {
+    uVelocity:{value:null}, uSource:{value:null},
+    texelSize:{value:V2()}, dyeTexelSize:{value:V2()},
+    dt:{value:0}, dissipation:{value:1},
+  }, supportLinear ? {} : { MANUAL_FILTERING:'' });
+  const splatMat = mat(FRAG_SPLAT, {
+    uTarget:{value:null}, aspectRatio:{value:1}, radius:{value:CFG.SPLAT_RADIUS},
+    color:{value:new THREE.Vector3()}, point:{value:V2(0.5,0.5)},
+  });
+  const curlMat = mat(FRAG_CURL, { uVelocity:{value:null}, texelSize:{value:V2()} });
+  const vortMat = mat(FRAG_VORTICITY, { uVelocity:{value:null}, uCurl:{value:null}, texelSize:{value:V2()}, curl:{value:CFG.CURL}, dt:{value:0} });
+  const divMat  = mat(FRAG_DIVERGENCE, { uVelocity:{value:null}, texelSize:{value:V2()} });
+  const pressMat= mat(FRAG_PRESSURE, { uPressure:{value:null}, uDivergence:{value:null}, texelSize:{value:V2()} });
+  const gradMat = mat(FRAG_GRADSUB, { uPressure:{value:null}, uVelocity:{value:null}, texelSize:{value:V2()} });
+  const mulMat  = mat(FRAG_MULTIPLY, { uTexture:{value:null}, value:{value:1} });
+  const bakeMat = mat(FRAG_BAKE, {
+    uPagoda:{value:null}, resolution:{value:V2()},
+    paperColor:{value:new THREE.Vector3(...PAPER_RGB)},
+    pagodaColor:{value:new THREE.Vector3(...PAGODA_RGB)},
+  });
+  const dispMat = mat(FRAG_DISPLAY, { uBackground:{value:null}, uDye:{value:null}, inkStrength:{value:CFG.INK_STRENGTH}, dyeTexel:{value:V2(1/CFG.DYE_RES, 1/CFG.DYE_RES)} });
+
+  // ── Render targets ──────────────────────────────────────────────────────────
+  function makeRT(w,h){
+    const rt = new THREE.WebGLRenderTarget(w,h,{
+      type:THREE.HalfFloatType, format:THREE.RGBAFormat,
+      minFilter:FILTER, magFilter:FILTER,
+      wrapS:THREE.ClampToEdgeWrapping, wrapT:THREE.ClampToEdgeWrapping,
+      depthBuffer:false, stencilBuffer:false,
+    });
+    renderer.setRenderTarget(rt); renderer.clear(true,false,false);
+    return rt;
+  }
+  function makeDouble(w,h){ let a=makeRT(w,h), b=makeRT(w,h); return { w, h, texelSize:V2(1/w,1/h), get read(){return a;}, get write(){return b;}, swap(){const t=a;a=b;b=t;} }; }
+
+  // Grid sized to the viewport aspect (longer axis = res) so the simulation is
+  // never stretched onto a wide/tall screen — the marbling stays undistorted.
+  function gridDims(res, aspect){
+    return aspect >= 1
+      ? { w: res, h: Math.max(2, Math.round(res / aspect)) }
+      : { w: Math.max(2, Math.round(res * aspect)), h: res };
+  }
+
+  let velocity, pressure, divergence, curl, dye;
+  function buildSimTargets(res, aspect){
+    [velocity,pressure,divergence,curl].forEach(t=>{ if(!t) return; (t.read?[t.read,t.write]:[t]).forEach(r=>r.dispose()); });
+    const d = gridDims(res, aspect);
+    velocity   = makeDouble(d.w, d.h);
+    pressure   = makeDouble(d.w, d.h);
+    divergence = makeRT(d.w, d.h);
+    curl       = makeRT(d.w, d.h);
+  }
+  function buildDye(aspect){
+    if (dye){ dye.read.dispose(); dye.write.dispose(); }
+    const d = gridDims(CFG.DYE_RES, aspect);
+    dye = makeDouble(d.w, d.h);
+    dispMat.uniforms.dyeTexel.value.set(1/d.w, 1/d.h);
+  }
+  buildSimTargets(simRes, window.innerWidth/window.innerHeight);
+  buildDye(window.innerWidth/window.innerHeight);
+
+  // Background (paper + pagoda) baked at screen resolution; cheap, on resize only.
+  let background = null, pagodaCanvas = document.createElement('canvas'), pagodaTex = null;
+  window.__silCanvas = pagodaCanvas;   // debug: lets the silhouette be extracted as a PNG
+
+  // Public-domain "Green Chinese dragon" (Wikimedia Commons, CC0) used as the silhouette.
+  const dragonImg = new Image();
+  let dragonReady = false;
+  dragonImg.onload = ()=>{ dragonReady = true; resize(); };
+  dragonImg.onerror = ()=>{ console.warn('[suminagashi] dragon.png failed to load'); };
+  dragonImg.src = 'dragon.png?v=1';
+
+  // ── Silhouette → texture (draws the dragon, baked into the background) ───────
+  function drawPagoda(){
+    const dpr = Math.min(window.devicePixelRatio||1, CFG.DPR_CAP);
+    const Wc = canvas.clientWidth || window.innerWidth;
+    const Hc = canvas.clientHeight || window.innerHeight;
+    pagodaCanvas.width  = Math.max(2, Math.round(Wc*dpr));
+    pagodaCanvas.height = Math.max(2, Math.round(Hc*dpr));
+    const c = pagodaCanvas.getContext('2d');
+    c.clearRect(0,0,pagodaCanvas.width,pagodaCanvas.height);
+    c.save();
+    c.scale(dpr,dpr);
+    if (dragonReady){
+      const ar = dragonImg.naturalWidth / dragonImg.naturalHeight;
+      const targetH = Hc * 0.94, targetW = targetH * ar;
+      // anchor by the head (≈ image fraction 0.31, 0.61) toward the upper-left-of-centre
+      const dx = Wc*0.47 - 0.31*targetW;
+      const dy = Hc*0.46 - 0.61*targetH;
+      c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
+      c.drawImage(dragonImg, dx, dy, targetW, targetH);
+    }
+    c.restore();
+
+    // Reallocate the texture each draw: a CanvasTexture whose source canvas was
+    // resized must be recreated, not just flagged needsUpdate, or the GPU keeps
+    // the old dimensions (which can ghost the silhouette after a viewport resize).
+    if (pagodaTex) pagodaTex.dispose();
+    pagodaTex = new THREE.CanvasTexture(pagodaCanvas);
+    pagodaTex.minFilter = THREE.LinearFilter;
+    pagodaTex.magFilter = THREE.LinearFilter;
+    pagodaTex.generateMipmaps = false;
+    bakeMat.uniforms.uPagoda.value = pagodaTex;
+  }
+
+  // ── Sizing / bake ──────────────────────────────────────────────────────────
+  function resize(){
+    const dpr = Math.min(window.devicePixelRatio||1, CFG.DPR_CAP);
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    const w = renderer.domElement.width, h = renderer.domElement.height;
+    // Aspect-matched sim/dye grids — rebuild only when the grid would change.
+    const aspect = window.innerWidth/window.innerHeight;
+    const nd = gridDims(simRes, aspect);
+    if (!velocity || velocity.w !== nd.w || velocity.h !== nd.h){
+      buildSimTargets(simRes, aspect);
+      buildDye(aspect);
+    }
+    if (background) background.dispose();
+    background = new THREE.WebGLRenderTarget(w,h,{ minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, depthBuffer:false, stencilBuffer:false });
+    drawPagoda();
+    bakeMat.uniforms.uPagoda.value = pagodaTex;
+    bakeMat.uniforms.resolution.value.set(w,h);
+    blit(background, bakeMat);
+    splatMat.uniforms.aspectRatio.value = 1;   // grid matches screen → no splat distortion
+  }
+
+  // ── Splatting ────────────────────────────────────────────────────────────────
+  const _vel = new THREE.Vector3();
+  const _dye = new THREE.Vector3();
+  function splat(px, py, dx, dy, inkIdx, amount){
+    const absorb = ABSORB[inkIdx];
+    // velocity
+    splatMat.uniforms.uTarget.value = velocity.read.texture;
+    splatMat.uniforms.point.value.set(px,py);
+    splatMat.uniforms.radius.value = CFG.SPLAT_RADIUS;
+    splatMat.uniforms.color.value.copy(_vel.set(dx,dy,0));
+    blit(velocity.write, splatMat); velocity.swap();
+    // dye (pigment density)
+    splatMat.uniforms.uTarget.value = dye.read.texture;
+    splatMat.uniforms.color.value.copy(_dye.set(absorb[0]*amount, absorb[1]*amount, absorb[2]*amount));
+    blit(dye.write, splatMat); dye.swap();
+  }
+  const pickInk = ()=> activeInk < 0 ? (Math.random()*PALETTE.length)|0 : activeInk;
+
+  // Velocity-only nudge — used by the wash to drift the ink apart as it dissolves.
+  function velSplat(px, py, dx, dy, radius){
+    splatMat.uniforms.uTarget.value = velocity.read.texture;
+    splatMat.uniforms.point.value.set(px,py);
+    splatMat.uniforms.radius.value = radius;
+    splatMat.uniforms.color.value.copy(_vel.set(dx,dy,0));
+    blit(velocity.write, splatMat); velocity.swap();
+  }
+
+  function autoSplat(){
+    const px = 0.18 + Math.random()*0.64;
+    const py = 0.24 + Math.random()*0.56;
+    const ang = Math.random()*Math.PI*2;
+    const mag = CFG.SPLAT_FORCE * (0.006 + Math.random()*0.010);
+    splat(px, py, Math.cos(ang)*mag, Math.sin(ang)*mag, (Math.random()*PALETTE.length)|0, CFG.AUTO_AMOUNT);
+  }
+
+  // ── Pointer input ────────────────────────────────────────────────────────────
+  const pointer = { down:false, x:0, y:0, px:0, py:0 };
+  function setPos(e){
+    const r = canvas.getBoundingClientRect();
+    pointer.px = pointer.x; pointer.py = pointer.y;
+    pointer.x = (e.clientX - r.left)/r.width;
+    pointer.y = 1.0 - (e.clientY - r.top)/r.height;
+  }
+  let strokeInk = activeInk;
+  canvas.addEventListener('pointerdown', e=>{
+    e.preventDefault();                          // suppress iOS long-press callout / text selection on touch
+    canvas.setPointerCapture?.(e.pointerId);
+    pointer.down = true; setPos(e); pointer.px = pointer.x; pointer.py = pointer.y;
+    strokeInk = pickInk();                       // one ink per stroke (multi picks per stroke, not per dab)
+    splat(pointer.x, pointer.y, 0, 0, strokeInk, CFG.DYE_AMOUNT*0.8);
+  });
+  canvas.addEventListener('pointermove', e=>{
+    if (!pointer.down) return;
+    setPos(e);
+    const dx = (pointer.x - pointer.px) * CFG.SPLAT_FORCE;
+    const dy = (pointer.y - pointer.py) * CFG.SPLAT_FORCE;
+    const speed = Math.min(1, Math.hypot(pointer.x-pointer.px, pointer.y-pointer.py)*18);
+    splat(pointer.x, pointer.y, dx, dy, strokeInk, CFG.DYE_AMOUNT*(0.55+0.45*speed));
+  });
+  const endPointer = ()=>{ pointer.down = false; };
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+  // No pointerleave handler: with pointer capture it can fire at the screen edge
+  // mid-drag and cut a stroke short. pointerup/cancel end the stroke reliably.
+
+  // ── UI wiring ────────────────────────────────────────────────────────────────
+  const swatches = [...document.querySelectorAll('.swatch')];
+  function selectInk(idx){
+    activeInk = idx;
+    swatches.forEach(s=> s.setAttribute('aria-pressed', String(+s.dataset.ink === idx)));
+  }
+  swatches.forEach(s=> s.addEventListener('click', ()=> selectInk(+s.dataset.ink)));
+  selectInk(activeInk);
+
+  const autoBtn = document.getElementById('autoBtn');
+  autoBtn.setAttribute('aria-pressed', String(autoOn));
+  autoBtn.addEventListener('click', ()=>{ autoOn = !autoOn; autoBtn.setAttribute('aria-pressed', String(autoOn)); autoTimer = 0; });
+
+  document.getElementById('washBtn').addEventListener('click', ()=>{ washUntil = performance.now() + WASH_MS; });
+
+  // ── Simulation step ──────────────────────────────────────────────────────────
+  function step(dt){
+    const ts = velocity.texelSize;
+    // curl
+    curlMat.uniforms.uVelocity.value = velocity.read.texture;
+    curlMat.uniforms.texelSize.value.copy(ts);
+    blit(curl, curlMat);
+    // vorticity confinement
+    vortMat.uniforms.uVelocity.value = velocity.read.texture;
+    vortMat.uniforms.uCurl.value = curl.texture;
+    vortMat.uniforms.texelSize.value.copy(ts);
+    vortMat.uniforms.curl.value = CFG.CURL; vortMat.uniforms.dt.value = dt;
+    blit(velocity.write, vortMat); velocity.swap();
+    // divergence
+    divMat.uniforms.uVelocity.value = velocity.read.texture;
+    divMat.uniforms.texelSize.value.copy(ts);
+    blit(divergence, divMat);
+    // damp pressure, then Jacobi solve
+    mulMat.uniforms.uTexture.value = pressure.read.texture; mulMat.uniforms.value.value = CFG.PRESSURE;
+    blit(pressure.write, mulMat); pressure.swap();
+    pressMat.uniforms.uDivergence.value = divergence.texture;
+    pressMat.uniforms.texelSize.value.copy(ts);
+    for (let i=0;i<CFG.PRESSURE_ITER;i++){
+      pressMat.uniforms.uPressure.value = pressure.read.texture;
+      blit(pressure.write, pressMat); pressure.swap();
+    }
+    // gradient subtract → divergence-free velocity
+    gradMat.uniforms.uPressure.value = pressure.read.texture;
+    gradMat.uniforms.uVelocity.value = velocity.read.texture;
+    gradMat.uniforms.texelSize.value.copy(ts);
+    blit(velocity.write, gradMat); velocity.swap();
+    // advect velocity
+    advectMat.uniforms.texelSize.value.copy(ts);
+    advectMat.uniforms.dyeTexelSize.value.copy(ts);
+    advectMat.uniforms.dt.value = dt;
+    advectMat.uniforms.uVelocity.value = velocity.read.texture;
+    advectMat.uniforms.uSource.value = velocity.read.texture;
+    advectMat.uniforms.dissipation.value = CFG.VEL_DISS;
+    blit(velocity.write, advectMat); velocity.swap();
+    // advect dye
+    advectMat.uniforms.uVelocity.value = velocity.read.texture;
+    advectMat.uniforms.uSource.value = dye.read.texture;
+    advectMat.uniforms.dyeTexelSize.value.copy(dye.texelSize);
+    advectMat.uniforms.dissipation.value = CFG.DYE_DISS;
+    blit(dye.write, advectMat); dye.swap();
+  }
+
+  // ── Main loop ────────────────────────────────────────────────────────────────
+  let last = performance.now();
+  let fpsAcc = 0, fpsFrames = 0, warm = 0;
+  window.__sim = { get fps(){ return fpsValue; }, get simRes(){ return simRes; }, isWebGL2,
+    get grid(){ return velocity ? { vel:[velocity.w,velocity.h], dye:[dye.w,dye.h] } : null; } };
+  let fpsValue = 0;
+
+  function frame(now){
+    let dt = (now - last)/1000; last = now;
+    dt = Math.min(dt, 1/60);            // clamp for stability after tab-away
+    if (dt <= 0) dt = 1/60;
+
+    // auto performance
+    if (autoOn && now > washUntil){
+      autoTimer += dt;
+      if (autoTimer >= CFG.AUTO_INTERVAL){ autoTimer -= CFG.AUTO_INTERVAL; autoSplat(); }
+    }
+
+    step(dt);
+
+    // wash (洗い流す): the ink dissolves — a gentle drifting flow swirls it apart
+    // as the pigment fades, then a clean clear at the end.
+    if (now < washUntil){
+      const remain = (washUntil - now) / WASH_MS;          // 1 → 0
+      const f = Math.pow(0.02, dt / 2.4);                  // smooth pigment fade
+      mulMat.uniforms.uTexture.value = dye.read.texture; mulMat.uniforms.value.value = f;
+      blit(dye.write, mulMat); dye.swap();
+      const drift = CFG.SPLAT_FORCE * 0.005 * remain;      // eases out as it clears
+      for (let i=0;i<2;i++){
+        const a = Math.random()*6.2832;
+        velSplat(Math.random(), Math.random(), Math.cos(a)*drift, Math.sin(a)*drift + drift*0.25, CFG.SPLAT_RADIUS*5.0);
+      }
+    } else if (washUntil !== 0 && now >= washUntil){
+      renderer.setRenderTarget(dye.read);  renderer.clear(true,false,false);
+      renderer.setRenderTarget(dye.write); renderer.clear(true,false,false);
+      washUntil = 0;
+    }
+
+    // composite to screen
+    dispMat.uniforms.uBackground.value = background.texture;
+    dispMat.uniforms.uDye.value = dye.read.texture;
+    blit(null, dispMat);
+
+    // fps + one-time auto-downgrade if a 1080p frame budget is missed
+    fpsAcc += dt; fpsFrames++; warm += dt;
+    if (fpsAcc >= 0.5){ fpsValue = Math.round(fpsFrames/fpsAcc); fpsAcc = 0; fpsFrames = 0; }
+    if (!downgraded && warm > 2.5 && fpsValue > 0 && fpsValue < 55){
+      downgraded = true; simRes = 384; buildSimTargets(simRes, window.innerWidth/window.innerHeight);
+      console.warn('[suminagashi] Below 60fps — dropping sim resolution to 384.');
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ── Boot ─────────────────────────────────────────────────────────────────────
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Seed the canvas so it is alive on load (marbling of three inks), or a single
+  // still bloom when the visitor prefers reduced motion.
+  if (reduceMotion){
+    splat(0.5, 0.52, 0, 0, 0, CFG.DYE_AMOUNT);
+  } else {
+    splat(0.40, 0.58,  CFG.SPLAT_FORCE*0.010,  CFG.SPLAT_FORCE*0.004, 1, CFG.DYE_AMOUNT);
+    splat(0.56, 0.46, -CFG.SPLAT_FORCE*0.008,  CFG.SPLAT_FORCE*0.006, 2, CFG.DYE_AMOUNT);
+    splat(0.66, 0.62, -CFG.SPLAT_FORCE*0.004, -CFG.SPLAT_FORCE*0.008, 3, CFG.DYE_AMOUNT*0.9);
+  }
+
+  requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
